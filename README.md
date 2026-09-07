@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Recruitment OC Queue
 
 A real-time applicant check-in and interview queuing system, built with Next.js and Firebase Firestore, ready to deploy on Vercel.
@@ -92,3 +93,6 @@ Each applicant is a document in the `applicants` Firestore collection:
 - Add Firebase Authentication so only logged-in OCs can access the page
 - Add a "called in for interview" status between Waiting and Interviewed
 - Export the final list (with timestamps) at the end of the day
+=======
+# thanima-recruitments-26-27
+>>>>>>> 112e5098de6643151b2c2a6edbf3daa011becde8
