@@ -26,6 +26,9 @@ export default function Home() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [sheetLink, setSheetLink] = useState("");
+  const [importingLink, setImportingLink] = useState(false);
+  const [expanded, setExpanded] = useState(new Set());
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -65,7 +68,9 @@ export default function Home() {
       (a) =>
         (a.name || "").toLowerCase().includes(term) ||
         (a.regNumber || "").toLowerCase().includes(term) ||
-        (a.dept || "").toLowerCase().includes(term)
+        (a.dept1 || "").toLowerCase().includes(term) ||
+        (a.dept2 || "").toLowerCase().includes(term) ||
+        (a.dept3 || "").toLowerCase().includes(term)
     );
   }, [applicants, search]);
 
@@ -97,7 +102,7 @@ export default function Home() {
       await addDoc(collection(db, "applicants"), {
         name: newName.trim(),
         regNumber: newReg.trim(),
-        dept: newDept.trim(),
+        dept1: newDept.trim(),
         arrived: false,
         interviewed: false,
         arrivedAt: null,
@@ -113,7 +118,7 @@ export default function Home() {
     }
   };
 
-  // Pull a value out of a spreadsheet row, trying a list of possible header names
+  // Exact-header lookup: tries each key in order, returns the first non-empty match
   const pick = (row, keys) => {
     for (const k of keys) {
       if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== "") {
@@ -121,6 +126,117 @@ export default function Home() {
       }
     }
     return "";
+  };
+
+  // Fuzzy fallback: finds the first column whose header contains ALL keywords in a
+  // group (case-insensitive). Tries each group in order. Handles long, form-generated
+  // headers like "Which department would you like to volunteer for? [1st preference]"
+  const pickFuzzy = (row, keywordGroups) => {
+    const headers = Object.keys(row);
+    for (const keywords of keywordGroups) {
+      const match = headers.find((h) => {
+        const lower = h.toLowerCase();
+        return keywords.every((kw) => lower.includes(kw));
+      });
+      if (match && String(row[match]).trim() !== "") {
+        return String(row[match]).trim();
+      }
+    }
+    return "";
+  };
+
+  const NAME_KEYS = ["Name", "name", "Student Name", "Full Name"];
+  const REG_KEYS = [
+    "Reg No",
+    "Reg. No.",
+    "RegNo",
+    "regNumber",
+    "Registration Number",
+    "Registration No",
+    "Reg Number",
+  ];
+  const VIT_MAIL_KEYS = ["VIT Mail ID", "VIT Mail Id", "VIT Email", "vitMailId"];
+  const PHONE_KEYS = ["Phone Number", "Phone", "Mobile Number", "Mobile", "Contact Number"];
+  const YEAR_KEYS = ["Year of Study", "Year"];
+  const SLOT_KEYS = ["Select your slot", "Slot"];
+  const RESIDENCE_KEYS = [
+    "Select from the following",
+    "Hosteller/Day Scholar",
+    "Residence",
+    "Hosteller / Day Scholar",
+  ];
+  const DEPT1_GROUPS = [
+    ["department", "1st preference"],
+    ["department", "first preference"],
+    ["department"],
+  ];
+  const DEPT2_GROUPS = [
+    ["department", "2nd preference"],
+    ["department", "second preference"],
+  ];
+  const DEPT3_GROUPS = [
+    ["department", "3rd preference"],
+    ["department", "third preference"],
+  ];
+  const LITERARY_GROUPS = [["literary"]];
+  const REASON_GROUPS = [["reason", "chosen"], ["reason"]];
+  const EXPERIENCE_GROUPS = [["experience", "skill"], ["experience"], ["skill"]];
+  const DESIGN_PORTFOLIO_GROUPS = [["portfolio", "design"], ["decor"]];
+  const MEDIA_PORTFOLIO_GROUPS = [["media portfolio"], ["best works"]];
+  const GITHUB_GROUPS = [["github"]];
+
+  // Turns one parsed spreadsheet row into a Firestore-ready applicant object,
+  // or null if it's missing a name / reg number.
+  const rowToApplicant = (row) => {
+    const name = pick(row, NAME_KEYS);
+    const regNumber = pick(row, REG_KEYS);
+    if (!name || !regNumber) return null;
+    return {
+      name,
+      regNumber,
+      vitMail: pick(row, VIT_MAIL_KEYS),
+      phone: pick(row, PHONE_KEYS),
+      yearOfStudy: pick(row, YEAR_KEYS),
+      slot: pick(row, SLOT_KEYS),
+      residence: pick(row, RESIDENCE_KEYS),
+      dept1: pickFuzzy(row, DEPT1_GROUPS),
+      dept2: pickFuzzy(row, DEPT2_GROUPS),
+      dept3: pickFuzzy(row, DEPT3_GROUPS),
+      literaryInterest: pickFuzzy(row, LITERARY_GROUPS),
+      reason: pickFuzzy(row, REASON_GROUPS),
+      experience: pickFuzzy(row, EXPERIENCE_GROUPS),
+      designPortfolio: pickFuzzy(row, DESIGN_PORTFOLIO_GROUPS),
+      mediaPortfolio: pickFuzzy(row, MEDIA_PORTFOLIO_GROUPS),
+      github: pickFuzzy(row, GITHUB_GROUPS),
+      arrived: false,
+      interviewed: false,
+      arrivedAt: null,
+      createdAt: serverTimestamp(),
+    };
+  };
+
+  // Writes an array of parsed rows to Firestore in batches of 450 (Firestore's
+  // batched-write cap is 500 operations).
+  const importRows = async (rows) => {
+    let imported = 0;
+    let skipped = 0;
+    const CHUNK_SIZE = 450;
+    for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const row of chunk) {
+        const applicant = rowToApplicant(row);
+        if (!applicant) {
+          skipped++;
+          continue;
+        }
+        const ref = doc(collection(db, "applicants"));
+        batch.set(ref, applicant);
+        imported++;
+      }
+      await batch.commit();
+    }
+    return { imported, skipped };
   };
 
   const handleFileUpload = async (e) => {
@@ -141,56 +257,7 @@ export default function Home() {
         return;
       }
 
-      const nameKeys = ["Name", "name", "Student Name", "Full Name"];
-      const regKeys = [
-        "Reg No",
-        "Reg. No.",
-        "RegNo",
-        "regNumber",
-        "Registration Number",
-        "Registration No",
-        "Reg Number",
-      ];
-      const deptKeys = [
-        "Dept",
-        "dept",
-        "Department",
-        "Department Selected",
-        "Dept Selected",
-        "Preference",
-      ];
-
-      let imported = 0;
-      let skipped = 0;
-
-      // Firestore batched writes cap at 500 operations, so chunk larger imports
-      const CHUNK_SIZE = 450;
-      for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
-        const chunk = rows.slice(i, i + CHUNK_SIZE);
-        const batch = writeBatch(db);
-        for (const row of chunk) {
-          const name = pick(row, nameKeys);
-          const regNumber = pick(row, regKeys);
-          const dept = pick(row, deptKeys);
-          if (!name || !regNumber) {
-            skipped++;
-            continue;
-          }
-          const ref = doc(collection(db, "applicants"));
-          batch.set(ref, {
-            name,
-            regNumber,
-            dept,
-            arrived: false,
-            interviewed: false,
-            arrivedAt: null,
-            createdAt: serverTimestamp(),
-          });
-          imported++;
-        }
-        await batch.commit();
-      }
-
+      const { imported, skipped } = await importRows(rows);
       setNotice(
         `Imported ${imported} applicant${imported === 1 ? "" : "s"}.` +
           (skipped ? ` Skipped ${skipped} row(s) missing a name or reg. number.` : "")
@@ -198,11 +265,70 @@ export default function Home() {
     } catch (err) {
       console.error(err);
       setError(
-        "Failed to import file. Make sure it's a valid Excel/CSV file with Name, Reg No, and Dept columns."
+        "Failed to import file. Make sure it's a valid Excel/CSV file with a Name and Reg. Number column."
       );
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  // Extracts the spreadsheet ID and (optional) gid/sheet tab from a normal
+  // Google Sheets share URL, e.g.
+  // https://docs.google.com/spreadsheets/d/1abc.../edit?usp=sharing#gid=123
+  const parseGoogleSheetUrl = (url) => {
+    const idMatch = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!idMatch) return null;
+    const gidMatch = url.match(/[?#&]gid=([0-9]+)/);
+    return { id: idMatch[1], gid: gidMatch ? gidMatch[1] : "0" };
+  };
+
+  const handleLinkImport = async (e) => {
+    e.preventDefault();
+    const url = sheetLink.trim();
+    if (!url) return;
+
+    const parsed = parseGoogleSheetUrl(url);
+    if (!parsed) {
+      setError(
+        "That doesn't look like a Google Sheets link. Paste the URL from your browser's address bar while viewing the sheet."
+      );
+      return;
+    }
+
+    setImportingLink(true);
+    setError("");
+    setNotice("");
+    try {
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${parsed.id}/export?format=csv&gid=${parsed.gid}`;
+      const res = await fetch(csvUrl);
+      if (!res.ok) {
+        throw new Error(`Sheet fetch failed with status ${res.status}`);
+      }
+      const csvText = await res.text();
+      const workbook = XLSX.read(csvText, { type: "string" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+
+      if (!rows.length) {
+        setError("The linked sheet appears to be empty.");
+        setImportingLink(false);
+        return;
+      }
+
+      const { imported, skipped } = await importRows(rows);
+      setNotice(
+        `Imported ${imported} applicant${imported === 1 ? "" : "s"} from the link.` +
+          (skipped ? ` Skipped ${skipped} row(s) missing a name or reg. number.` : "")
+      );
+      setSheetLink("");
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Couldn't read that sheet directly. Make sure it's shared as \"Anyone with the link can view,\" or download it as .xlsx/.csv and use Import from Excel/CSV instead."
+      );
+    } finally {
+      setImportingLink(false);
     }
   };
 
@@ -242,39 +368,113 @@ export default function Home() {
     }
   };
 
-  const ApplicantRow = ({ a, queuePosition }) => (
-    <div className="applicant-card">
-      <div className="applicant-info">
-        <div className="applicant-name">
-          {queuePosition && <span className="queue-number">#{queuePosition}</span>}
-          {a.name}
+  const toggleExpanded = (id) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const ApplicantRow = ({ a, queuePosition }) => {
+    const isOpen = expanded.has(a.id);
+    const hasExtra =
+      a.reason || a.experience || a.designPortfolio || a.mediaPortfolio || a.github;
+    const depts = [a.dept1, a.dept2, a.dept3].filter(Boolean);
+
+    return (
+      <div className="applicant-card">
+        <div className="applicant-main">
+          <div className="applicant-info">
+            <div className="applicant-name">
+              {queuePosition && <span className="queue-number">#{queuePosition}</span>}
+              {a.name}
+            </div>
+            <div className="applicant-reg">
+              Reg #{a.regNumber}
+              {depts.length ? ` · ${depts.join(" / ")}` : ""}
+            </div>
+            {(a.phone || a.yearOfStudy || a.slot || a.residence) && (
+              <div className="applicant-meta">
+                {a.phone && <span>{a.phone}</span>}
+                {a.yearOfStudy && <span>{a.yearOfStudy}</span>}
+                {a.slot && <span>{a.slot}</span>}
+                {a.residence && <span>{a.residence}</span>}
+              </div>
+            )}
+          </div>
+          <div className="actions">
+            <button
+              className={`btn ${a.arrived ? "on" : ""}`}
+              onClick={() => toggleArrived(a)}
+            >
+              {a.arrived ? "Arrived ✓" : "Check In"}
+            </button>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={!!a.interviewed}
+                onChange={() => toggleInterviewed(a)}
+              />
+              Interviewed
+            </label>
+            <button className="btn danger-outline" onClick={() => removeApplicant(a)}>
+              Remove
+            </button>
+          </div>
         </div>
-        <div className="applicant-reg">
-          Reg #{a.regNumber}
-          {a.dept ? ` · ${a.dept}` : ""}
-        </div>
+
+        {hasExtra && (
+          <>
+            <button className="expand-toggle" onClick={() => toggleExpanded(a.id)}>
+              {isOpen ? "Hide details ▲" : "Show details ▼"}
+            </button>
+            {isOpen && (
+              <div className="expanded-details">
+                {a.reason && (
+                  <div className="detail-block">
+                    <span className="detail-label">Reason for choosing depts</span>
+                    <p>{a.reason}</p>
+                  </div>
+                )}
+                {a.experience && (
+                  <div className="detail-block">
+                    <span className="detail-label">Experience / skills</span>
+                    <p>{a.experience}</p>
+                  </div>
+                )}
+                {a.designPortfolio && (
+                  <div className="detail-block">
+                    <span className="detail-label">Design portfolio</span>
+                    <a href={a.designPortfolio} target="_blank" rel="noreferrer">
+                      {a.designPortfolio}
+                    </a>
+                  </div>
+                )}
+                {a.mediaPortfolio && (
+                  <div className="detail-block">
+                    <span className="detail-label">Media portfolio</span>
+                    <a href={a.mediaPortfolio} target="_blank" rel="noreferrer">
+                      {a.mediaPortfolio}
+                    </a>
+                  </div>
+                )}
+                {a.github && (
+                  <div className="detail-block">
+                    <span className="detail-label">GitHub</span>
+                    <a href={a.github} target="_blank" rel="noreferrer">
+                      {a.github}
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
-      <div className="actions">
-        <button
-          className={`btn ${a.arrived ? "on" : ""}`}
-          onClick={() => toggleArrived(a)}
-        >
-          {a.arrived ? "Arrived ✓" : "Check In"}
-        </button>
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={!!a.interviewed}
-            onChange={() => toggleInterviewed(a)}
-          />
-          Interviewed
-        </label>
-        <button className="btn danger-outline" onClick={() => removeApplicant(a)}>
-          Remove
-        </button>
-      </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="container">
@@ -322,7 +522,23 @@ export default function Home() {
             hidden
           />
         </label>
-        <span className="import-hint">Columns: Name, Reg No, Dept</span>
+      </div>
+
+      <form className="link-import-bar" onSubmit={handleLinkImport}>
+        <input
+          type="url"
+          placeholder="Or paste a Google Sheets link..."
+          value={sheetLink}
+          onChange={(e) => setSheetLink(e.target.value)}
+        />
+        <button type="submit" disabled={importingLink}>
+          {importingLink ? "Importing..." : "Import"}
+        </button>
+      </form>
+      <div className="import-hint">
+        Reads Name, Reg No, VIT Mail, Phone, Year, Slot, Residence, all 3 dept
+        preferences, plus reason/experience/portfolio links. For a link import, the
+        sheet must be shared as &quot;Anyone with the link can view.&quot;
       </div>
 
       {showAddForm && (
