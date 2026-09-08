@@ -93,6 +93,23 @@ h1 {
   white-space: nowrap;
 }
 
+.clear-all-btn {
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--danger);
+  background: white;
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.clear-all-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .add-form {
   background: var(--card);
   border: 1px solid var(--border);

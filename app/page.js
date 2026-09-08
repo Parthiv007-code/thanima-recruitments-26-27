@@ -10,7 +10,6 @@ import {
   doc,
   writeBatch,
   serverTimestamp,
-  orderBy,
   query,
 } from "firebase/firestore";
 import * as XLSX from "xlsx";
@@ -35,6 +34,30 @@ const BLANK_ADD_FORM = {
   github: "",
 };
 
+// Fields compared to decide whether two applicant entries are duplicates.
+// Status fields (arrived/interviewed/timestamps) are deliberately excluded.
+const DUPLICATE_CHECK_FIELDS = [
+  "name",
+  "regNumber",
+  "email",
+  "vitMail",
+  "phone",
+  "yearOfStudy",
+  "slot",
+  "residence",
+  "dept1",
+  "dept2",
+  "dept3",
+  "reason",
+  "experience",
+  "designPortfolio",
+  "mediaPortfolio",
+  "github",
+];
+
+const isDuplicateEntry = (a, b) =>
+  DUPLICATE_CHECK_FIELDS.every((f) => (a[f] || "").trim() === (b[f] || "").trim());
+
 export default function Home() {
   const [applicants, setApplicants] = useState([]);
   const [search, setSearch] = useState("");
@@ -49,7 +72,7 @@ export default function Home() {
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const q = query(collection(db, "applicants"), orderBy("createdAt", "desc"));
+    const q = query(collection(db, "applicants"));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -104,14 +127,49 @@ export default function Home() {
       });
   }, [filtered]);
 
+  const bySortOrder = (a, b) => {
+    const sa = typeof a.sortOrder === "number" ? a.sortOrder : Infinity;
+    const sb = typeof b.sortOrder === "number" ? b.sortOrder : Infinity;
+    return sa - sb;
+  };
+
   const notArrivedList = useMemo(
-    () => filtered.filter((a) => !a.arrived && !a.interviewed),
+    () => filtered.filter((a) => !a.arrived && !a.interviewed).sort(bySortOrder),
     [filtered]
   );
 
   const completedList = useMemo(
-    () => filtered.filter((a) => a.interviewed),
+    () => filtered.filter((a) => a.interviewed).sort(bySortOrder),
     [filtered]
+  );
+
+  // Builds a comparable signature from every field of an applicant, so two
+  // entries only count as duplicates if EVERY field matches exactly.
+  const buildSignature = (obj) =>
+    JSON.stringify(
+      [
+        obj.name,
+        obj.regNumber,
+        obj.email,
+        obj.vitMail,
+        obj.phone,
+        obj.yearOfStudy,
+        obj.slot,
+        obj.residence,
+        obj.dept1,
+        obj.dept2,
+        obj.dept3,
+        obj.reason,
+        obj.experience,
+        obj.designPortfolio,
+        obj.mediaPortfolio,
+        obj.github,
+      ].map((v) => (v || "").toString().trim().toLowerCase())
+    );
+
+  const existingSignatures = useMemo(
+    () => new Set(applicants.map(buildSignature)),
+    [applicants]
   );
 
   const updateAddForm = (field) => (e) =>
@@ -120,27 +178,40 @@ export default function Home() {
   const handleAdd = async (e) => {
     e.preventDefault();
     if (!addForm.name.trim() || !addForm.regNumber.trim()) return;
+
+    const candidate = {
+      name: addForm.name.trim(),
+      regNumber: addForm.regNumber.trim(),
+      email: addForm.email.trim(),
+      vitMail: addForm.vitMail.trim(),
+      phone: addForm.phone.trim(),
+      yearOfStudy: addForm.yearOfStudy.trim(),
+      slot: addForm.slot.trim(),
+      residence: addForm.residence.trim(),
+      dept1: addForm.dept1.trim(),
+      dept2: addForm.dept2.trim(),
+      dept3: addForm.dept3.trim(),
+      reason: addForm.reason.trim(),
+      experience: addForm.experience.trim(),
+      designPortfolio: addForm.designPortfolio.trim(),
+      mediaPortfolio: addForm.mediaPortfolio.trim(),
+      github: addForm.github.trim(),
+    };
+
+    if (existingSignatures.has(buildSignature(candidate))) {
+      const proceed = confirm(
+        "This is an exact duplicate of an existing applicant (every field matches). Add it anyway?"
+      );
+      if (!proceed) return;
+    }
+
     try {
       await addDoc(collection(db, "applicants"), {
-        name: addForm.name.trim(),
-        regNumber: addForm.regNumber.trim(),
-        email: addForm.email.trim(),
-        vitMail: addForm.vitMail.trim(),
-        phone: addForm.phone.trim(),
-        yearOfStudy: addForm.yearOfStudy.trim(),
-        slot: addForm.slot.trim(),
-        residence: addForm.residence.trim(),
-        dept1: addForm.dept1.trim(),
-        dept2: addForm.dept2.trim(),
-        dept3: addForm.dept3.trim(),
-        reason: addForm.reason.trim(),
-        experience: addForm.experience.trim(),
-        designPortfolio: addForm.designPortfolio.trim(),
-        mediaPortfolio: addForm.mediaPortfolio.trim(),
-        github: addForm.github.trim(),
+        ...candidate,
         arrived: false,
         interviewed: false,
         arrivedAt: null,
+        sortOrder: Date.now(),
         createdAt: serverTimestamp(),
       });
       setAddForm(BLANK_ADD_FORM);
@@ -251,10 +322,19 @@ export default function Home() {
   };
 
   // Writes an array of parsed rows to Firestore in batches of 450 (Firestore's
-  // batched-write cap is 500 operations).
+  // batched-write cap is 500 operations). Each row gets an explicit sortOrder so
+  // the app can display applicants in the same order they appeared in the sheet
+  // (Firestore's serverTimestamp ties every row in a batch to the same instant,
+  // which otherwise makes the display order look random). Exact duplicates
+  // (every field identical) are skipped automatically rather than prompted one
+  // by one, since a bulk import can be hundreds of rows.
   const importRows = async (rows) => {
     let imported = 0;
     let skipped = 0;
+    let duplicates = 0;
+    const seenSignatures = new Set(existingSignatures);
+    const base = Date.now();
+    let position = 0;
     const CHUNK_SIZE = 450;
     for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
       const chunk = rows.slice(i, i + CHUNK_SIZE);
@@ -265,13 +345,20 @@ export default function Home() {
           skipped++;
           continue;
         }
+        const sig = buildSignature(applicant);
+        if (seenSignatures.has(sig)) {
+          duplicates++;
+          continue;
+        }
+        seenSignatures.add(sig);
         const ref = doc(collection(db, "applicants"));
-        batch.set(ref, applicant);
+        batch.set(ref, { ...applicant, sortOrder: base + position });
+        position++;
         imported++;
       }
       await batch.commit();
     }
-    return { imported, skipped };
+    return { imported, skipped, duplicates };
   };
 
   const handleFileUpload = async (e) => {
@@ -292,10 +379,11 @@ export default function Home() {
         return;
       }
 
-      const { imported, skipped } = await importRows(rows);
+      const { imported, skipped, duplicates } = await importRows(rows);
       setNotice(
         `Imported ${imported} applicant${imported === 1 ? "" : "s"}.` +
-          (skipped ? ` Skipped ${skipped} row(s) missing a name or reg. number.` : "")
+          (skipped ? ` Skipped ${skipped} row(s) missing a name or reg. number.` : "") +
+          (duplicates ? ` Skipped ${duplicates} exact duplicate row(s).` : "")
       );
     } catch (err) {
       console.error(err);
@@ -365,10 +453,11 @@ export default function Home() {
         return;
       }
 
-      const { imported, skipped } = await importRows(rows);
+      const { imported, skipped, duplicates } = await importRows(rows);
       setNotice(
         `Imported ${imported} applicant${imported === 1 ? "" : "s"} from the link.` +
-          (skipped ? ` Skipped ${skipped} row(s) missing a name or reg. number.` : "")
+          (skipped ? ` Skipped ${skipped} row(s) missing a name or reg. number.` : "") +
+          (duplicates ? ` Skipped ${duplicates} exact duplicate row(s).` : "")
       );
       setSheetLink("");
     } catch (err) {
@@ -421,6 +510,31 @@ export default function Home() {
     } catch (err) {
       console.error(err);
       setError("Failed to delete. Check Firestore permissions.");
+    }
+  };
+
+  const handleClearAll = async () => {
+    if (applicants.length === 0) return;
+    const typed = prompt(
+      `This will permanently delete all ${applicants.length} applicants. This cannot be undone.\n\nType "confirm" (without quotes) to proceed.`
+    );
+    if (typed === null) return; // cancelled
+    if (typed.trim().toLowerCase() !== "confirm") {
+      alert('Cancelled — the text you typed did not match "confirm".');
+      return;
+    }
+    try {
+      const CHUNK_SIZE = 450;
+      for (let i = 0; i < applicants.length; i += CHUNK_SIZE) {
+        const chunk = applicants.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        chunk.forEach((a) => batch.delete(doc(db, "applicants", a.id)));
+        await batch.commit();
+      }
+      setNotice("All applicants have been cleared.");
+    } catch (err) {
+      console.error(err);
+      setError("Failed to clear all applicants. Check Firestore permissions.");
     }
   };
 
@@ -569,6 +683,13 @@ export default function Home() {
         />
         <button className="add-toggle" onClick={() => setShowAddForm((s) => !s)}>
           {showAddForm ? "Close" : "+ Add"}
+        </button>
+        <button
+          className="clear-all-btn"
+          onClick={handleClearAll}
+          disabled={applicants.length === 0}
+        >
+          Clear All
         </button>
       </div>
 
