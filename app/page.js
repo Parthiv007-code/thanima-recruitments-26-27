@@ -16,13 +16,30 @@ import {
 import * as XLSX from "xlsx";
 import { db } from "../lib/firebase";
 
+const BLANK_ADD_FORM = {
+  name: "",
+  regNumber: "",
+  email: "",
+  vitMail: "",
+  phone: "",
+  yearOfStudy: "",
+  slot: "",
+  residence: "",
+  dept1: "",
+  dept2: "",
+  dept3: "",
+  reason: "",
+  experience: "",
+  designPortfolio: "",
+  mediaPortfolio: "",
+  github: "",
+};
+
 export default function Home() {
   const [applicants, setApplicants] = useState([]);
   const [search, setSearch] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newReg, setNewReg] = useState("");
-  const [newDept, setNewDept] = useState("");
+  const [addForm, setAddForm] = useState(BLANK_ADD_FORM);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -70,7 +87,9 @@ export default function Home() {
         (a.regNumber || "").toLowerCase().includes(term) ||
         (a.dept1 || "").toLowerCase().includes(term) ||
         (a.dept2 || "").toLowerCase().includes(term) ||
-        (a.dept3 || "").toLowerCase().includes(term)
+        (a.dept3 || "").toLowerCase().includes(term) ||
+        (a.email || "").toLowerCase().includes(term) ||
+        (a.vitMail || "").toLowerCase().includes(term)
     );
   }, [applicants, search]);
 
@@ -95,22 +114,36 @@ export default function Home() {
     [filtered]
   );
 
+  const updateAddForm = (field) => (e) =>
+    setAddForm((prev) => ({ ...prev, [field]: e.target.value }));
+
   const handleAdd = async (e) => {
     e.preventDefault();
-    if (!newName.trim() || !newReg.trim()) return;
+    if (!addForm.name.trim() || !addForm.regNumber.trim()) return;
     try {
       await addDoc(collection(db, "applicants"), {
-        name: newName.trim(),
-        regNumber: newReg.trim(),
-        dept1: newDept.trim(),
+        name: addForm.name.trim(),
+        regNumber: addForm.regNumber.trim(),
+        email: addForm.email.trim(),
+        vitMail: addForm.vitMail.trim(),
+        phone: addForm.phone.trim(),
+        yearOfStudy: addForm.yearOfStudy.trim(),
+        slot: addForm.slot.trim(),
+        residence: addForm.residence.trim(),
+        dept1: addForm.dept1.trim(),
+        dept2: addForm.dept2.trim(),
+        dept3: addForm.dept3.trim(),
+        reason: addForm.reason.trim(),
+        experience: addForm.experience.trim(),
+        designPortfolio: addForm.designPortfolio.trim(),
+        mediaPortfolio: addForm.mediaPortfolio.trim(),
+        github: addForm.github.trim(),
         arrived: false,
         interviewed: false,
         arrivedAt: null,
         createdAt: serverTimestamp(),
       });
-      setNewName("");
-      setNewReg("");
-      setNewDept("");
+      setAddForm(BLANK_ADD_FORM);
       setShowAddForm(false);
     } catch (err) {
       console.error(err);
@@ -155,6 +188,7 @@ export default function Home() {
     "Registration No",
     "Reg Number",
   ];
+  const EMAIL_KEYS = ["Email Address", "Email", "email"];
   const VIT_MAIL_KEYS = ["VIT Mail ID", "VIT Mail Id", "VIT Email", "vitMailId"];
   const PHONE_KEYS = ["Phone Number", "Phone", "Mobile Number", "Mobile", "Contact Number"];
   const YEAR_KEYS = ["Year of Study", "Year"];
@@ -194,6 +228,7 @@ export default function Home() {
     return {
       name,
       regNumber,
+      email: pick(row, EMAIL_KEYS),
       vitMail: pick(row, VIT_MAIL_KEYS),
       phone: pick(row, PHONE_KEYS),
       yearOfStudy: pick(row, YEAR_KEYS),
@@ -299,20 +334,34 @@ export default function Home() {
     setImportingLink(true);
     setError("");
     setNotice("");
+
+    // Guard against the request hanging forever (e.g. the sheet isn't actually
+    // link-shared and Google silently redirects to a sign-in page).
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+
     try {
       const csvUrl = `https://docs.google.com/spreadsheets/d/${parsed.id}/export?format=csv&gid=${parsed.gid}`;
-      const res = await fetch(csvUrl);
+      const res = await fetch(csvUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
       if (!res.ok) {
         throw new Error(`Sheet fetch failed with status ${res.status}`);
       }
       const csvText = await res.text();
+
+      // If the sheet isn't actually link-shared, Google returns an HTML sign-in
+      // page instead of CSV. Detect that instead of trying to parse it as data.
+      if (csvText.trim().startsWith("<")) {
+        throw new Error("Received a sign-in page instead of CSV data.");
+      }
+
       const workbook = XLSX.read(csvText, { type: "string" });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
 
       if (!rows.length) {
         setError("The linked sheet appears to be empty.");
-        setImportingLink(false);
         return;
       }
 
@@ -323,10 +372,17 @@ export default function Home() {
       );
       setSheetLink("");
     } catch (err) {
+      clearTimeout(timeoutId);
       console.error(err);
-      setError(
-        "Couldn't read that sheet directly. Make sure it's shared as \"Anyone with the link can view,\" or download it as .xlsx/.csv and use Import from Excel/CSV instead."
-      );
+      if (err.name === "AbortError") {
+        setError(
+          "The request timed out. Double-check the sheet is shared as \"Anyone with the link can view,\" or use Import from Excel/CSV instead."
+        );
+      } else {
+        setError(
+          "Couldn't read that sheet directly. Make sure it's shared as \"Anyone with the link can view,\" or download it as .xlsx/.csv and use Import from Excel/CSV instead."
+        );
+      }
     } finally {
       setImportingLink(false);
     }
@@ -395,6 +451,12 @@ export default function Home() {
               Reg #{a.regNumber}
               {depts.length ? ` · ${depts.join(" / ")}` : ""}
             </div>
+            {(a.email || a.vitMail) && (
+              <div className="applicant-contact">
+                {a.email && <span>{a.email}</span>}
+                {a.vitMail && <span>{a.vitMail}</span>}
+              </div>
+            )}
             {(a.phone || a.yearOfStudy || a.slot || a.residence) && (
               <div className="applicant-meta">
                 {a.phone && <span>{a.phone}</span>}
@@ -536,31 +598,103 @@ export default function Home() {
         </button>
       </form>
       <div className="import-hint">
-        Reads Name, Reg No, VIT Mail, Phone, Year, Slot, Residence, all 3 dept
+        Reads Name, Reg No, Email, VIT Mail, Phone, Year, Slot, Residence, all 3 dept
         preferences, plus reason/experience/portfolio links. For a link import, the
-        sheet must be shared as &quot;Anyone with the link can view.&quot;
+        sheet must be shared as &quot;Anyone with the link can view.&quot; Times out
+        after 20s if the sheet can&apos;t be reached.
       </div>
 
       {showAddForm && (
         <form className="add-form" onSubmit={handleAdd}>
-          <input
-            placeholder="Full name"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            required
+          <div className="add-form-section">
+            <input
+              placeholder="Full name *"
+              value={addForm.name}
+              onChange={updateAddForm("name")}
+              required
+            />
+            <input
+              placeholder="Registration number *"
+              value={addForm.regNumber}
+              onChange={updateAddForm("regNumber")}
+              required
+            />
+            <input
+              placeholder="Personal email"
+              value={addForm.email}
+              onChange={updateAddForm("email")}
+            />
+            <input
+              placeholder="VIT mail ID"
+              value={addForm.vitMail}
+              onChange={updateAddForm("vitMail")}
+            />
+            <input
+              placeholder="Phone number"
+              value={addForm.phone}
+              onChange={updateAddForm("phone")}
+            />
+            <input
+              placeholder="Year of study"
+              value={addForm.yearOfStudy}
+              onChange={updateAddForm("yearOfStudy")}
+            />
+            <input
+              placeholder="Slot (Morning/Evening)"
+              value={addForm.slot}
+              onChange={updateAddForm("slot")}
+            />
+            <input
+              placeholder="Hosteller / Day Scholar"
+              value={addForm.residence}
+              onChange={updateAddForm("residence")}
+            />
+            <input
+              placeholder="1st preference dept"
+              value={addForm.dept1}
+              onChange={updateAddForm("dept1")}
+            />
+            <input
+              placeholder="2nd preference dept"
+              value={addForm.dept2}
+              onChange={updateAddForm("dept2")}
+            />
+            <input
+              placeholder="3rd preference dept"
+              value={addForm.dept3}
+              onChange={updateAddForm("dept3")}
+            />
+            <input
+              placeholder="Design portfolio link"
+              value={addForm.designPortfolio}
+              onChange={updateAddForm("designPortfolio")}
+            />
+            <input
+              placeholder="Media portfolio link"
+              value={addForm.mediaPortfolio}
+              onChange={updateAddForm("mediaPortfolio")}
+            />
+            <input
+              placeholder="GitHub link"
+              value={addForm.github}
+              onChange={updateAddForm("github")}
+            />
+          </div>
+          <textarea
+            placeholder="Reason for choosing these departments"
+            value={addForm.reason}
+            onChange={updateAddForm("reason")}
+            rows={2}
           />
-          <input
-            placeholder="Registration number"
-            value={newReg}
-            onChange={(e) => setNewReg(e.target.value)}
-            required
+          <textarea
+            placeholder="Previous experience / relevant skills"
+            value={addForm.experience}
+            onChange={updateAddForm("experience")}
+            rows={2}
           />
-          <input
-            placeholder="Department (optional)"
-            value={newDept}
-            onChange={(e) => setNewDept(e.target.value)}
-          />
-          <button type="submit">Save</button>
+          <button type="submit" className="add-form-submit">
+            Save Applicant
+          </button>
         </form>
       )}
 
