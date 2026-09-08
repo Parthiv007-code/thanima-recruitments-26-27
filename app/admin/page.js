@@ -11,6 +11,7 @@ import {
 } from "firebase/firestore";
 import * as XLSX from "xlsx";
 import { db } from "../../lib/firebase";
+import ThemeToggle from "../ThemeToggle";
 
 const ADMIN_PASSWORD = "thaniadmin";
 
@@ -32,6 +33,9 @@ function AdminGate({ children }) {
   if (!authed) {
     return (
       <div className="gate-shell">
+        <div className="gate-theme-toggle">
+          <ThemeToggle />
+        </div>
         <form className="gate-card" onSubmit={submit}>
           <h2>Admin Access</h2>
           <p>Enter the admin password to continue</p>
@@ -70,9 +74,22 @@ function AdminPanel() {
     return "";
   };
 
-  const nameKeys = ["Name", "name", "Student Name", "Full Name"];
-  const regKeys = ["Reg No", "Reg. No.", "RegNo", "regNumber", "Registration Number", "Registration No", "Reg Number"];
-  const deptKeys = ["Dept", "dept", "Department", "Department Selected", "Dept Selected", "Preference"];
+  const nameKeys = ["Full Name", "Name", "name", "Student Name"];
+  const regKeys = ["Registration Number", "Reg No", "Reg. No.", "RegNo", "regNumber", "Registration No", "Reg Number"];
+  const vitMailKeys = ["VIT Mail ID", "VIT Mail", "vitMail"];
+  const phoneKeys = ["Phone Number", "Phone", "phone"];
+  const yearKeys = ["Year of Study", "Year"];
+  const slotKeys = ["Select your slot", "Slot"];
+  const hostelKeys = ["Select from the following", "Hosteller/Day Scholar", "Hostel Type", "hostelType"];
+  const dept1Keys = ["Which department would you like to volunteer for? [1st preference]", "1st preference", "Dept 1st preference", "Dept", "dept"];
+  const dept2Keys = ["Which department would you like to volunteer for? [2nd preference]", "2nd preference", "Dept 2nd preference"];
+  const dept3Keys = ["Which department would you like to volunteer for? [3rd preference]", "3rd preference", "Dept 3rd preference"];
+  const literaryKeys = ["Are you interested in curating literary events?", "Literary Events", "literaryInterest"];
+  const reasonKeys = ["Provide a reason as to why you have chosen the above 3 departments", "Reason"];
+  const experienceKeys = ["Mention your previous experience/relevant skills if any", "Experience"];
+  const designPortfolioKeys = ["Upload your portfolio/ any previous design or decor work/ make a poster for an imaginary event", "Design Portfolio"];
+  const mediaPortfolioKeys = ["Upload your media portfolio/ any of your best works", "Media Portfolio"];
+  const githubKeys = ["Attach your GitHub link", "GitHub", "Github Link", "github"];
 
   const importRows = async (rows) => {
     if (!rows.length) {
@@ -87,7 +104,7 @@ function AdminPanel() {
       for (const row of chunk) {
         const name = pick(row, nameKeys);
         const regNumber = pick(row, regKeys);
-        const dept = pick(row, deptKeys);
+        const dept1 = pick(row, dept1Keys);
         if (!name || !regNumber) {
           skipped++;
           continue;
@@ -96,7 +113,22 @@ function AdminPanel() {
         batch.set(ref, {
           name,
           regNumber,
-          dept,
+          vitMail: pick(row, vitMailKeys),
+          phone: pick(row, phoneKeys),
+          year: pick(row, yearKeys),
+          slot: pick(row, slotKeys),
+          hostelType: pick(row, hostelKeys),
+          dept1,
+          dept2: pick(row, dept2Keys),
+          dept3: pick(row, dept3Keys),
+          // kept for backward compatibility with search / older records
+          dept: dept1,
+          literaryInterest: pick(row, literaryKeys),
+          reason: pick(row, reasonKeys),
+          experience: pick(row, experienceKeys),
+          designPortfolio: pick(row, designPortfolioKeys),
+          mediaPortfolio: pick(row, mediaPortfolioKeys),
+          github: pick(row, githubKeys),
           arrived: false,
           interviewed: false,
           arrivedAt: null,
@@ -189,7 +221,10 @@ function AdminPanel() {
     <div className="app-shell admin-shell">
       <div className="header-row">
         <h1>Admin Panel</h1>
-        <Link href="/" className="admin-link">← Back to Queue</Link>
+        <div className="header-actions">
+          <ThemeToggle />
+          <Link href="/" className="admin-link">← Back to Queue</Link>
+        </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -208,7 +243,10 @@ function AdminPanel() {
             hidden
           />
         </label>
-        <span className="import-hint">Columns: Name, Reg No, Dept</span>
+        <span className="import-hint">
+          Matches your recruitment sheet columns (Name, Reg No, VIT Mail, Phone, Year, Slot, Hosteller/Day Scholar,
+          Dept preferences, reason, experience, portfolio links, GitHub, etc). Only Name and Reg No are required.
+        </span>
       </div>
 
       <div className="admin-section">
